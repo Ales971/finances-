@@ -82,6 +82,22 @@
   .budget-bar { height: 7px; background: var(--surface2); border-radius: 99px; overflow: hidden; }
   .budget-fill { height: 100%; border-radius: 99px; transition: width .5s ease; }
 
+  /* Stacked strip */
+  .strip-wrap { position: relative; }
+  .strip-total { font-family: 'Playfair Display', serif; font-size: 22px; margin-bottom: 8px; }
+  .strip-labels { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 8px; }
+  .strip-label { display: flex; align-items: center; gap: 5px; font-size: 12px; color: var(--muted); }
+  .strip-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+  .strip-bar { height: 14px; border-radius: 99px; overflow: hidden; display: flex; cursor: default; }
+  .strip-seg { height: 100%; transition: opacity .2s; position: relative; }
+  .strip-seg:hover { opacity: .75; }
+  .strip-tooltip {
+    position: fixed; background: var(--surface); border: 1px solid var(--border);
+    border-radius: 10px; padding: 8px 14px; font-size: 13px; pointer-events: none;
+    z-index: 9999; white-space: nowrap; box-shadow: 0 4px 20px rgba(0,0,0,.4);
+    display: none;
+  }
+
   .form-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 20px; }
   .form-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 12px; margin-bottom: 12px; }
   .form-group { display: flex; flex-direction: column; gap: 5px; }
@@ -285,6 +301,9 @@
   </div>
 </div>
 
+<!-- Strip Tooltip -->
+<div class="strip-tooltip" id="strip-tooltip"></div>
+
 <!-- Wallet Manager Modal -->
 <div class="modal-overlay" id="wallet-manager-modal" onclick="if(event.target===this)closeWalletManager()">
   <div class="modal" style="max-width:520px;">
@@ -467,8 +486,9 @@
 
   <!-- Budget -->
   <div class="section">
-    <div class="section-title">Расходы по категориям</div>
+    <div class="section-title">Расходы и потери по категориям</div>
     <div class="form-card">
+      <div id="budget-total-strip" style="margin-bottom:16px;"></div>
       <div class="budget-list" id="budget-bars"></div>
     </div>
   </div>
@@ -1232,19 +1252,93 @@ function renderCatPies(mt) {
 
 
 function renderBudget(mt) {
-  const bycat={};
-  mt.filter(t=>t.type==='expense').forEach(t=>{ bycat[t.category]=(bycat[t.category]||0)+t.amount; });
-  const total=Object.values(bycat).reduce((s,v)=>s+v,0)||1;
-  const entries=Object.entries(bycat).sort((a,b)=>b[1]-a[1]);
-  const el=document.getElementById('budget-bars');
-  if (!entries.length) { el.innerHTML='<div class="empty">Нет расходов за этот месяц</div>'; return; }
-  const colors=['#e0605a','#c8a96e','#7c6fcd','#5b9cf6','#4ecb8d','#f0935c','#e06aab'];
-  el.innerHTML=entries.map(([cat,amt],i)=>{
-    const pct=Math.round(amt/total*100), col=colors[i%colors.length];
-    return `<div class="budget-item">
-      <div class="budget-header"><span>${cat}</span><span style="color:var(--muted)">${fmtMoney(amt)} <span style="color:${col}">${pct}%</span></span></div>
-      <div class="budget-bar"><div class="budget-fill" style="width:${pct}%;background:${col}"></div></div>
-    </div>`;
+  const el = document.getElementById('budget-bars');
+  const stripEl = document.getElementById('budget-total-strip');
+
+  // Combine expense + loss by category
+  const bycat = {};
+  const typemap = {}; // cat -> 'expense'|'loss'|'both'
+  mt.filter(t => t.type === 'expense' || t.type === 'loss').forEach(t => {
+    bycat[t.category] = (bycat[t.category] || 0) + t.amount;
+    typemap[t.category] = typemap[t.category]
+      ? (typemap[t.category] !== t.type ? 'both' : typemap[t.category])
+      : t.type;
+  });
+
+  const entries = Object.entries(bycat).sort((a, b) => b[1] - a[1]);
+  const grandTotal = entries.reduce((s, [, v]) => s + v, 0);
+
+  if (!entries.length) {
+    el.innerHTML = '<div class="empty">Нет расходов и потерь за этот период</div>';
+    stripEl.innerHTML = '';
+    return;
+  }
+
+  const EXPENSE_COLORS = ['#e0605a','#f0935c','#e06aab','#fb923c','#f43f5e','#e879a0','#ff6b6b'];
+  const LOSS_COLORS    = ['#c8a96e','#7c6fcd','#5b9cf6','#4ecb8d','#a3e635','#38bdf8','#818cf8'];
+
+  const colorMap = {};
+  let ei = 0, li = 0;
+  entries.forEach(([cat]) => {
+    const t = typemap[cat];
+    if (t === 'loss') { colorMap[cat] = LOSS_COLORS[li++ % LOSS_COLORS.length]; }
+    else { colorMap[cat] = EXPENSE_COLORS[ei++ % EXPENSE_COLORS.length]; }
+  });
+
+  // ── STACKED STRIP ──
+  const totalExpense = mt.filter(t=>t.type==='expense').reduce((s,t)=>s+t.amount,0);
+  const totalLoss    = mt.filter(t=>t.type==='loss').reduce((s,t)=>s+t.amount,0);
+  const tooltip = document.getElementById('strip-tooltip');
+
+  const segs = entries.map(([cat, amt]) => {
+    const pct = (amt / grandTotal * 100).toFixed(2);
+    const col = colorMap[cat];
+    const typeLabel = typemap[cat] === 'loss' ? 'Потери' : typemap[cat] === 'both' ? 'Расход+Потери' : 'Расход';
+    return { cat, amt, pct, col, typeLabel };
+  });
+
+  stripEl.innerHTML =
+    '<div class="strip-wrap">' +
+      '<div class="strip-total">' +
+        fmtMoney(grandTotal) +
+        '<span style="font-size:13px;color:var(--muted);font-family:\'DM Sans\',sans-serif;margin-left:10px;">' +
+          'расходы ' + fmtMoney(totalExpense) + ' · потери ' + fmtMoney(totalLoss) +
+        '</span>' +
+      '</div>' +
+      '<div class="strip-bar" id="strip-bar">' +
+        segs.map(s =>
+          '<div class="strip-seg" style="width:' + s.pct + '%;background:' + s.col + ';" ' +
+          'data-cat="' + s.cat + '" data-amt="' + s.amt + '" data-type="' + s.typeLabel + '" data-pct="' + Math.round(s.pct) + '"></div>'
+        ).join('') +
+      '</div>' +
+    '</div>';
+
+  // Tooltip events
+  document.getElementById('strip-bar').querySelectorAll('.strip-seg').forEach(seg => {
+    seg.addEventListener('mousemove', function(e) {
+      tooltip.style.display = 'block';
+      tooltip.style.left = (e.clientX + 14) + 'px';
+      tooltip.style.top  = (e.clientY - 36) + 'px';
+      tooltip.innerHTML =
+        '<span style="color:' + colorMap[this.dataset.cat] + ';font-weight:600">' + this.dataset.cat + '</span>' +
+        ' <span style="color:var(--muted);font-size:11px">' + this.dataset.type + '</span><br>' +
+        fmtMoney(parseFloat(this.dataset.amt)) + ' <span style="color:var(--muted)">' + this.dataset.pct + '%</span>';
+    });
+    seg.addEventListener('mouseleave', function() { tooltip.style.display = 'none'; });
+  });
+
+  // ── CATEGORY BARS ──
+  el.innerHTML = entries.map(([cat, amt]) => {
+    const pct = Math.round(amt / grandTotal * 100);
+    const col = colorMap[cat];
+    const typeLabel = typemap[cat] === 'loss' ? '🔻' : typemap[cat] === 'both' ? '💸🔻' : '💸';
+    return '<div class="budget-item">' +
+      '<div class="budget-header">' +
+        '<span>' + typeLabel + ' ' + cat + '</span>' +
+        '<span style="color:var(--muted)">' + fmtMoney(amt) + ' <span style="color:' + col + '">' + pct + '%</span></span>' +
+      '</div>' +
+      '<div class="budget-bar"><div class="budget-fill" style="width:' + pct + '%;background:' + col + '"></div></div>' +
+    '</div>';
   }).join('');
 }
 
