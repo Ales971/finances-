@@ -1082,7 +1082,7 @@ function renderWalletsGrid() {
     const opCount = walletOps.filter(o=>o.wallet_id===w.id||(o.op_type==='transfer'&&o.to_wallet_id===w.id)).length;
     return `<div class="card c-work card-click" onclick="openWalletDetail('${w.id}')" style="cursor:pointer;">
       <div class="card-label">${emoji} ${w.name}</div>
-      <div class="card-value" style="color:var(--work);font-family:'Playfair Display',serif;font-size:clamp(18px,3.5vw,26px);font-weight:700;">${fmtMoney(w.balance)}</div>
+      <div class="card-value" style="color:var(--work);font-family:'Playfair Display',serif;font-size:clamp(18px,3.5vw,26px);font-weight:700;">${w.balance < 0 ? '-' : ''}${fmtMoney(w.balance)}</div>
       <div style="font-size:11px;color:var(--muted);margin-top:6px;">${opCount} операций</div>
     </div>`;
   }).join('');
@@ -1092,7 +1092,7 @@ function openWalletDetail(walletId) {
   const w = wallets.find(x => x.id === walletId);
   if (!w) return;
   document.getElementById('wd-title').textContent = (w.emoji || '💼') + ' ' + w.name;
-  document.getElementById('wd-balance').textContent = fmtMoney(w.balance);
+  document.getElementById('wd-balance').textContent = (w.balance < 0 ? '-' : '') + fmtMoney(w.balance);
   document.getElementById('wd-subtitle').textContent = 'текущий баланс';
 
   // Collect ops involving this wallet
