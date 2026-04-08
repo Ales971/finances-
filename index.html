@@ -637,14 +637,17 @@
 
   <!-- History -->
   <div class="section">
-    <div class="section-title">История</div>
+    <div class="section-title">
+      История
+      <button id="undo-btn" class="btn btn-ghost btn-sm" onclick="undoLast()" style="margin-left:auto;flex-shrink:0;display:none;">↩ Отменить</button>
+    </div>
     <div class="tx-filters">
       <button class="tab active" onclick="setFilter('all',this)">Все</button>
       <button class="tab" onclick="setFilter('income',this)">Доход</button>
       <button class="tab" onclick="setFilter('expense',this)">Расход</button>
       <button class="tab" onclick="setFilter('loss',this)">Потери</button>
       <button class="tab" onclick="setFilter('ten',this)">10%</button>
-      <button class="tab" onclick="setFilter('work',this)">В работе</button>
+      <button class="tab" onclick="setFilter('work',this)">🔄 В работе</button>
     </div>
     <div class="tx-list" id="tx-list"></div>
   </div>
@@ -1086,11 +1089,13 @@ function closeWalletDetail() {
 
 async function deleteWalletOp(opId, walletId) {
   if (!confirm('Удалить операцию?')) return;
+  const op = walletOps.find(o => o.id === opId);
   await supa.from('wallet_ops').delete().eq('id', opId);
   walletOps = walletOps.filter(o => o.id !== opId);
   recomputeWalletBalances();
+  if (op) setUndo({ type: 'deleteWalletOp', op });
   renderWork();
-  openWalletDetail(walletId); // refresh
+  openWalletDetail(walletId);
 }
 
 // Wallet Manager
@@ -1138,11 +1143,20 @@ async function addWallet() {
 
 async function deleteWallet(id) {
   const w = wallets.find(x => x.id === id);
-  if (!confirm(`Удалить кошелёк «${w?.name}»? Все его операции тоже удалятся.`)) return;
-  await supa.from('wallet_ops').delete().or(`wallet_id.eq.${id},to_wallet_id.eq.${id}`);
+  if (!confirm('Удалить кошелёк «' + (w?.name) + '»?\nОперации этого кошелька удалятся, но входящие переводы на другие кошельки сохранятся.')) return;
+
+  // Save for undo
+  const opsToDelete = walletOps.filter(o => o.wallet_id === id);
+  setUndo({ type: 'deleteWallet', wallet: w, ops: opsToDelete });
+
+  await supa.from('wallet_ops').delete().eq('wallet_id', id);
+  await supa.from('wallet_ops').update({ to_wallet_id: null }).eq('to_wallet_id', id);
   await supa.from('wallets').delete().eq('id', id);
+
   wallets = wallets.filter(x => x.id !== id);
-  walletOps = walletOps.filter(o => o.wallet_id !== id && o.to_wallet_id !== id);
+  walletOps = walletOps.filter(o => o.wallet_id !== id);
+  walletOps.forEach(o => { if (o.to_wallet_id === id) o.to_wallet_id = null; });
+
   recomputeWalletBalances();
   renderWalletManagerList();
   renderWork();
@@ -1351,17 +1365,46 @@ function setFilter(f,btn) {
 }
 
 function renderTxList(mt) {
-  let list=txFilter==='all'?mt:mt.filter(t=>t.type===txFilter);
-  list=[...list].sort((a,b)=> Number(b.id) - Number(a.id));
-  const el=document.getElementById('tx-list');
-  if (!list.length) { el.innerHTML='<div class="empty">Нет записей — добавьте первую! 👆</div>'; return; }
+  const el = document.getElementById('tx-list');
+
+  // «В работе» — показываем операции кошельков
+  if (txFilter === 'work') {
+    const ops = [...walletOps].sort((a, b) => b.date.localeCompare(a.date) || b.id.localeCompare(a.id));
+    if (!ops.length) { el.innerHTML = '<div class="empty">Нет операций с кошельками</div>'; return; }
+    el.innerHTML = ops.map(op => {
+      let icon, label, color, sign;
+      const fromW = wallets.find(x => x.id === op.wallet_id);
+      const toW   = wallets.find(x => x.id === op.to_wallet_id);
+      if (op.op_type === 'deposit')  { icon='📥'; label='Пополнение → ' + (fromW?.name||'?'); color='var(--income)'; sign='+'; }
+      else if (op.op_type === 'withdraw') { icon='📤'; label='Списание ← ' + (fromW?.name||'?'); color='var(--expense)'; sign='−'; }
+      else { icon='🔀'; label=(fromW?.name||'?') + ' → ' + (toW?.name||'?'); color='var(--work)'; sign=''; }
+      return `<div class="tx-item">
+        <div class="tx-icon" style="background:${color}22">${icon}</div>
+        <div class="tx-info">
+          <div class="tx-desc">${op.note || label}</div>
+          <div class="tx-meta">${label} · ${fmtDate(op.date)}</div>
+        </div>
+        <div class="tx-amount" style="color:${color}">${sign}${fmtMoney(op.amount)}</div>
+        <button class="tx-del" onclick="deleteWalletOpFromHistory('${op.id}')" title="Удалить">✕</button>
+      </div>`;
+    }).join('');
+    const old = document.getElementById('pagination'); if (old) old.remove();
+    return;
+  }
+
+  // Обычная история — work исключён из «все»
+  let list = mt.filter(t => t.type !== 'work');
+  if (txFilter !== 'all') list = list.filter(t => t.type === txFilter);
+  list = [...list].sort((a, b) => Number(b.id) - Number(a.id));
+
+  if (!list.length) { el.innerHTML = '<div class="empty">Нет записей — добавьте первую! 👆</div>'; return; }
 
   const totalPages = Math.ceil(list.length / TX_PER_PAGE);
   if (txPage > totalPages) txPage = totalPages;
   const page = list.slice((txPage-1)*TX_PER_PAGE, txPage*TX_PER_PAGE);
 
-  el.innerHTML = page.map(t=>{
-    const meta=TYPE_META[t.type];
+  el.innerHTML = page.map(t => {
+    const meta = TYPE_META[t.type];
     return `<div class="tx-item">
       <div class="tx-icon" style="background:${meta.color}22">${meta.icon}</div>
       <div class="tx-info">
@@ -1369,15 +1412,15 @@ function renderTxList(mt) {
         <div class="tx-meta">${meta.label} · ${t.category} · ${fmtDate(t.date)}</div>
       </div>
       <div class="tx-amount" style="color:${meta.color}">${t.type==='ten' && t.amount<0 ? '-' : meta.sign}${fmtMoney(t.amount)}</div>
-      ${t.auto ? `<span title="Авто: 10% от дохода" style="font-size:11px;color:var(--muted);padding:2px 7px;border:1px solid var(--border);border-radius:99px;flex-shrink:0;margin-right:2px">авто</span><button class="tx-edit" onclick="openEditModal('${t.id}')" title="Редактировать">✏️</button>` : `<button class="tx-edit" onclick="openEditModal('${t.id}')" title="Редактировать">✏️</button>`}
+      ${t.auto ? `<span title="Авто: 10% от дохода" style="font-size:11px;color:var(--muted);padding:2px 7px;border:1px solid var(--border);border-radius:99px;flex-shrink:0;margin-right:2px">авто</span>` : ''}
+      <button class="tx-edit" onclick="openEditModal('${t.id}')" title="Редактировать">✏️</button>
       <button class="tx-del" onclick="deleteTx('${t.id}')" title="Удалить">✕</button>
     </div>`;
   }).join('');
 
-  // Pagination controls
   if (totalPages > 1) {
     let pages = '';
-    for (let i=1; i<=totalPages; i++) {
+    for (let i = 1; i <= totalPages; i++) {
       pages += `<button class="page-btn${i===txPage?' active':''}" onclick="goPage(${i})">${i}</button>`;
     }
     el.insertAdjacentHTML('afterend', `<div class="pagination" id="pagination">
@@ -1387,8 +1430,7 @@ function renderTxList(mt) {
       <span class="page-info">${(txPage-1)*TX_PER_PAGE+1}–${Math.min(txPage*TX_PER_PAGE,list.length)} из ${list.length}</span>
     </div>`);
   } else {
-    const old = document.getElementById('pagination');
-    if (old) old.remove();
+    const old = document.getElementById('pagination'); if (old) old.remove();
   }
 }
 
@@ -1449,11 +1491,61 @@ async function addTx() {
   document.getElementById('tx-cat').value    = '';
 }
 
+// ── UNDO SYSTEM ───────────────────────────────────────────────────────────────
+let lastAction = null; // { type, data }
+
+function setUndo(action) {
+  lastAction = action;
+  document.getElementById('undo-btn').style.display = '';
+}
+
+async function undoLast() {
+  if (!lastAction) return;
+  const a = lastAction;
+  lastAction = null;
+  document.getElementById('undo-btn').style.display = 'none';
+
+  if (a.type === 'deleteTx') {
+    txs.push(a.tx);
+    await saveTxToDb(a.tx);
+    render();
+  } else if (a.type === 'deleteWalletOp') {
+    const { data } = await supa.from('wallet_ops').insert(a.op).select().single();
+    if (data) { walletOps.push(data); recomputeWalletBalances(); renderWork(); }
+    renderTxList(txs.filter(t => t.date.startsWith(currentMonth)));
+  } else if (a.type === 'deleteWallet') {
+    const { data: w } = await supa.from('wallets').insert({ id: a.wallet.id, name: a.wallet.name, emoji: a.wallet.emoji, balance: 0 }).select().single();
+    if (w) {
+      wallets.push({ ...w, balance: 0 });
+      for (const op of a.ops) {
+        const { data: o } = await supa.from('wallet_ops').insert(op).select().single();
+        if (o) walletOps.push(o);
+      }
+      recomputeWalletBalances();
+      renderWork();
+      syncWalletSelects();
+    }
+  }
+}
+
 async function deleteTx(id) {
   if (!confirm('Удалить запись?')) return;
-  txs=txs.filter(t=>t.id!==id);
+  const tx = txs.find(t => t.id === id);
+  txs = txs.filter(t => t.id !== id);
   await deleteTxFromDb(id);
+  if (tx) setUndo({ type: 'deleteTx', tx });
   render();
+}
+
+async function deleteWalletOpFromHistory(opId) {
+  if (!confirm('Удалить операцию?')) return;
+  const op = walletOps.find(o => o.id === opId);
+  await supa.from('wallet_ops').delete().eq('id', opId);
+  walletOps = walletOps.filter(o => o.id !== opId);
+  recomputeWalletBalances();
+  if (op) setUndo({ type: 'deleteWalletOp', op });
+  renderWork();
+  renderTxList(txs.filter(t => t.date.startsWith(currentMonth)));
 }
 
 function syncCatInput() {
