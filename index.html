@@ -352,6 +352,52 @@
   <div id="card-modal-list" class="card-modal-grid"></div>
 </div>
 
+<!-- Edit Wallet Op Modal -->
+<div class="modal-overlay" id="edit-wallet-op-modal" onclick="if(event.target===this)closeWalletOpModal()">
+  <div class="modal">
+    <div class="modal-title">✏️ Редактировать операцию</div>
+    <input type="hidden" id="ewop-id">
+    <div class="form-row">
+      <div class="form-group">
+        <label>Тип операции</label>
+        <select id="ewop-type" onchange="syncEditWalletOpFields()">
+          <option value="deposit">📥 Пополнение</option>
+          <option value="transfer">🔀 Перевод</option>
+          <option value="withdraw">📤 Списание</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label>Сумма ($)</label>
+        <input type="number" id="ewop-amount" placeholder="0.00" min="0" step="0.01">
+      </div>
+    </div>
+    <div class="form-row">
+      <div class="form-group" id="ewop-from-group">
+        <label id="ewop-from-label">Кошелёк</label>
+        <select id="ewop-from-sel"></select>
+      </div>
+      <div class="form-group" id="ewop-to-group">
+        <label>Куда</label>
+        <select id="ewop-to-sel"></select>
+      </div>
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label>Заметка</label>
+        <input type="text" id="ewop-note" placeholder="Описание...">
+      </div>
+      <div class="form-group">
+        <label>Дата</label>
+        <input type="date" id="ewop-date">
+      </div>
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-cancel" onclick="closeWalletOpModal()">Отмена</button>
+      <button class="btn btn-save" onclick="saveWalletOp()">Сохранить</button>
+    </div>
+  </div>
+</div>
+
 <!-- Edit Modal -->
 <div class="modal-overlay" id="edit-modal" onclick="if(event.target===this)closeModal()">
   <div class="modal">
@@ -1388,6 +1434,7 @@ function renderTxList(mt) {
           <div class="tx-meta">${label} · ${fmtDate(op.date)}</div>
         </div>
         <div class="tx-amount" style="color:${color}">${sign}${fmtMoney(op.amount)}</div>
+        <button class="tx-edit" onclick="openWalletOpModal('${op.id}')" title="Редактировать">✏️</button>
         <button class="tx-del" onclick="deleteWalletOpFromHistory('${op.id}')" title="Удалить">✕</button>
       </div>`;
     }).join('');
@@ -1533,6 +1580,16 @@ async function undoLast() {
     await saveTxToDb(a.prev);
     render();
 
+  } else if (a.type === 'editWalletOp') {
+    const { error } = await supa.from('wallet_ops').update(a.prev).eq('id', a.prev.id);
+    if (!error) {
+      const idx = walletOps.findIndex(o => o.id === a.prev.id);
+      if (idx !== -1) walletOps[idx] = a.prev;
+      recomputeWalletBalances();
+      renderWork();
+      renderTxList(txs.filter(t => t.date.startsWith(currentMonth)));
+    }
+
   } else if (a.type === 'deleteWalletOp') {
     const { data } = await supa.from('wallet_ops').insert(a.op).select().single();
     if (data) { walletOps.push(data); recomputeWalletBalances(); renderWork(); }
@@ -1582,6 +1639,74 @@ async function deleteWalletOpFromHistory(opId) {
   recomputeWalletBalances();
   if (op) setUndo({ type: 'deleteWalletOp', op });
   renderWork();
+  renderTxList(txs.filter(t => t.date.startsWith(currentMonth)));
+}
+
+function syncEditWalletOpFields() {
+  const opType = document.getElementById('ewop-type').value;
+  document.getElementById('ewop-to-group').style.display   = opType === 'transfer' ? '' : 'none';
+  document.getElementById('ewop-from-label').textContent   =
+    opType === 'deposit' ? 'Кошелёк (куда)' : opType === 'transfer' ? 'Откуда' : 'Кошелёк (откуда)';
+}
+
+function openWalletOpModal(opId) {
+  const op = walletOps.find(o => o.id === opId);
+  if (!op) return;
+
+  const opts = wallets.map(w => `<option value="${w.id}">${w.emoji || '💼'} ${w.name}</option>`).join('');
+  document.getElementById('ewop-from-sel').innerHTML = opts;
+  document.getElementById('ewop-to-sel').innerHTML   = opts;
+
+  document.getElementById('ewop-id').value          = op.id;
+  document.getElementById('ewop-type').value         = op.op_type;
+  document.getElementById('ewop-amount').value       = op.amount;
+  document.getElementById('ewop-from-sel').value     = op.wallet_id || '';
+  document.getElementById('ewop-to-sel').value       = op.to_wallet_id || '';
+  document.getElementById('ewop-note').value         = op.note || '';
+  document.getElementById('ewop-date').value         = op.date;
+  syncEditWalletOpFields();
+
+  document.getElementById('edit-wallet-op-modal').classList.add('open');
+}
+
+function closeWalletOpModal() {
+  document.getElementById('edit-wallet-op-modal').classList.remove('open');
+}
+
+async function saveWalletOp() {
+  const id      = document.getElementById('ewop-id').value;
+  const opType  = document.getElementById('ewop-type').value;
+  const amount  = parseFloat(document.getElementById('ewop-amount').value);
+  const fromId  = document.getElementById('ewop-from-sel').value;
+  const toId    = document.getElementById('ewop-to-sel').value;
+  const note    = document.getElementById('ewop-note').value.trim();
+  const date    = document.getElementById('ewop-date').value;
+
+  if (isNaN(amount) || amount <= 0) { alert('Введите корректную сумму'); return; }
+  if (!date) { alert('Выберите дату'); return; }
+  if (opType === 'transfer' && fromId === toId) { alert('Нельзя переводить на тот же кошелёк'); return; }
+
+  const prevOp = { ...walletOps.find(o => o.id === id) };
+
+  const updated = {
+    op_type:      opType,
+    amount:       amount,
+    wallet_id:    fromId,
+    to_wallet_id: opType === 'transfer' ? toId : null,
+    note:         note || null,
+    date:         date,
+  };
+
+  const { error } = await supa.from('wallet_ops').update(updated).eq('id', id);
+  if (error) { alert('Ошибка сохранения'); return; }
+
+  const idx = walletOps.findIndex(o => o.id === id);
+  if (idx !== -1) walletOps[idx] = { ...walletOps[idx], ...updated };
+
+  setUndo({ type: 'editWalletOp', prev: prevOp });
+  recomputeWalletBalances();
+  renderWork();
+  closeWalletOpModal();
   renderTxList(txs.filter(t => t.date.startsWith(currentMonth)));
 }
 
