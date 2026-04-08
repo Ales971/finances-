@@ -620,7 +620,7 @@
           </div>
           <div class="form-group" id="wallet-from-group">
             <label id="wallet-from-label">Кошелёк</label>
-            <select id="wallet-from-sel"></select>
+            <select id="wallet-from-sel" onchange="onWalletFromChange()"></select>
           </div>
           <div class="form-group" id="wallet-to-group" style="display:none;">
             <label>Куда</label>
@@ -1047,13 +1047,17 @@ async function loadWallets() {
 function recomputeWalletBalances() {
   wallets.forEach(w => { w.balance = 0; });
   walletOps.forEach(op => {
-    const w = wallets.find(x => x.id === op.wallet_id);
-    if (!w) return;
-    if (op.op_type === 'deposit')   w.balance += op.amount;
-    if (op.op_type === 'withdraw')  w.balance -= op.amount;
-    if (op.op_type === 'transfer') {
-      w.balance -= op.amount;
-      const wTo = wallets.find(x => x.id === op.to_wallet_id);
+    const w    = wallets.find(x => x.id === op.wallet_id);
+    const wTo  = wallets.find(x => x.id === op.to_wallet_id);
+    if (op.op_type === 'deposit') {
+      // wallet_id = куда (пополнение)
+      if (w) w.balance += op.amount;
+    } else if (op.op_type === 'withdraw') {
+      // wallet_id = откуда (списание)
+      if (w) w.balance -= op.amount;
+    } else if (op.op_type === 'transfer') {
+      // wallet_id = откуда, to_wallet_id = куда
+      if (w)   w.balance   -= op.amount;
       if (wTo) wTo.balance += op.amount;
     }
   });
@@ -1214,9 +1218,23 @@ function syncWalletSelects() {
   const opts = wallets.map(w => `<option value="${w.id}">${w.emoji || '💼'} ${w.name}</option>`).join('');
   document.getElementById('wallet-from-sel').innerHTML = opts || '<option value="">— нет кошельков —</option>';
   document.getElementById('wallet-to-sel').innerHTML   = opts || '<option value="">— нет кошельков —</option>';
+  // Auto-select different wallets for from/to
+  if (wallets.length >= 2) {
+    document.getElementById('wallet-from-sel').value = wallets[0].id;
+    document.getElementById('wallet-to-sel').value   = wallets[1].id;
+  }
   // Also populate expense cat datalist
   const expCats = [...new Set([...(cats['expense']||[]), ...txs.filter(t=>t.type==='expense').map(t=>t.category)])];
   document.getElementById('wallet-expense-cat-list').innerHTML = expCats.map(c=>`<option value="${c}">`).join('');
+}
+
+function onWalletFromChange() {
+  const fromId = document.getElementById('wallet-from-sel').value;
+  const toSel  = document.getElementById('wallet-to-sel');
+  if (toSel.value === fromId) {
+    const other = wallets.find(w => w.id !== fromId);
+    if (other) toSel.value = other.id;
+  }
 }
 
 function syncWalletOpFields() {
