@@ -1208,19 +1208,22 @@ async function addWalletOp(amount, desc, date) {
   recomputeWalletBalances();
 
   // If withdraw + also create expense
+  let linkedTx = null;
   if (opType === 'withdraw' && document.getElementById('wallet-also-expense').checked) {
     const expCat = document.getElementById('wallet-expense-cat').value.trim() || 'С кошелька';
     if (!cats['expense'].includes(expCat)) cats['expense'].push(expCat);
-    const expTx = {
+    linkedTx = {
       id: (Date.now()+2).toString(),
       type: 'expense', category: expCat, amount,
-      description: desc || `Списание: ${wallets.find(w=>w.id===fromId)?.name || ''}`,
+      description: desc || 'Списание: ' + (wallets.find(w=>w.id===fromId)?.name || ''),
       date
     };
-    txs.push(expTx);
-    await saveTxToDb(expTx);
+    txs.push(linkedTx);
+    await saveTxToDb(linkedTx);
     await save();
   }
+
+  setUndo({ type: 'addWalletOp', op: data, linkedTx });
   return true;
 }
 
@@ -1485,6 +1488,10 @@ async function addTx() {
   currentMonth = date.slice(0,7);
   buildMonthSel();
   document.getElementById('month-sel').value = currentMonth;
+  // Track for undo
+  const addedTxs = [newTx];
+  if (type === 'income' && document.getElementById('add-ten').checked) addedTxs.push(txs[txs.length-1]);
+  setUndo({ type: 'addTx', txs: addedTxs });
   render();
   document.getElementById('tx-amount').value = '';
   document.getElementById('tx-desc').value   = '';
@@ -1509,10 +1516,40 @@ async function undoLast() {
     txs.push(a.tx);
     await saveTxToDb(a.tx);
     render();
+
+  } else if (a.type === 'addTx') {
+    // Undo add — delete the added tx(s)
+    for (const tx of a.txs) {
+      txs = txs.filter(t => t.id !== tx.id);
+      await deleteTxFromDb(tx.id);
+    }
+    render();
+
+  } else if (a.type === 'editTx') {
+    // Restore previous version
+    const idx = txs.findIndex(t => t.id === a.prev.id);
+    if (idx !== -1) txs[idx] = a.prev;
+    else txs.push(a.prev);
+    await saveTxToDb(a.prev);
+    render();
+
   } else if (a.type === 'deleteWalletOp') {
     const { data } = await supa.from('wallet_ops').insert(a.op).select().single();
     if (data) { walletOps.push(data); recomputeWalletBalances(); renderWork(); }
     renderTxList(txs.filter(t => t.date.startsWith(currentMonth)));
+
+  } else if (a.type === 'addWalletOp') {
+    await supa.from('wallet_ops').delete().eq('id', a.op.id);
+    walletOps = walletOps.filter(o => o.id !== a.op.id);
+    // Also undo linked expense if any
+    if (a.linkedTx) {
+      txs = txs.filter(t => t.id !== a.linkedTx.id);
+      await deleteTxFromDb(a.linkedTx.id);
+    }
+    recomputeWalletBalances();
+    renderWork();
+    render();
+
   } else if (a.type === 'deleteWallet') {
     const { data: w } = await supa.from('wallets').insert({ id: a.wallet.id, name: a.wallet.name, emoji: a.wallet.emoji, balance: 0 }).select().single();
     if (w) {
@@ -1662,9 +1699,11 @@ async function saveTx() {
   const idx = txs.findIndex(t=>t.id===id);
   if (idx === -1) return;
   if (!cats[type].includes(cat)) { cats[type].push(cat); }
+  const prevTx = { ...txs[idx] }; // save before overwrite
   const updatedTx = { id, type, category:cat, amount, description:desc, date };
   txs[idx] = updatedTx;
   await saveTxToDb(updatedTx);
+  setUndo({ type: 'editTx', prev: prevTx });
   if (type === 'income' && document.getElementById('edit-add-ten').checked) {
     const ten = Math.round(amount * 0.1 * 100) / 100;
     const tenCat = '10% с дохода';
