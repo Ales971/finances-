@@ -505,18 +505,12 @@
     </div>
   </div>
 
-  <!-- Income + Expense by category pies -->
+  <!-- Income by category bars -->
   <div class="section">
-    <div class="section-title">По категориям</div>
-    <div class="charts-2">
-      <div class="chart-card">
-        <div class="chart-label">Доход по категориям</div>
-        <canvas id="income-pie-chart"></canvas>
-      </div>
-      <div class="chart-card">
-        <div class="chart-label">Расход по категориям</div>
-        <canvas id="expense-pie-chart"></canvas>
-      </div>
+    <div class="section-title">Доходы по категориям</div>
+    <div class="form-card">
+      <div id="income-total-strip" style="margin-bottom:16px;"></div>
+      <div class="budget-list" id="income-bars"></div>
     </div>
   </div>
 
@@ -796,7 +790,7 @@ const DEFAULT_CATS = {
 };
 
 let txs = [], cats = {}, currentMonth = '', txFilter = 'all', catType = 'income';
-let pieChart = null, dailyChart = null, incomePieChart = null, expensePieChart = null;
+let pieChart = null, dailyChart = null;
 let txPage = 1;
 let periodMode = "month"; // "month" | "all"
 const TX_PER_PAGE = 15;
@@ -1294,39 +1288,79 @@ async function addWalletOp(amount, desc, date) {
 function renderWorkPie() {} // replaced by wallet system
 
 function renderCatPies(mt) {
-  const COLORS = ['#4ecb8d','#c8a96e','#7c6fcd','#5b9cf6','#f0935c','#e06aab','#e0605a','#a3e635','#38bdf8','#fb923c'];
+  renderIncomeBars(mt);
+}
 
-  function buildPie(canvasId, type) {
-    const ctx = document.getElementById(canvasId).getContext('2d');
-    const bycat = {};
-    mt.filter(t=>t.type===type).forEach(t=>{ bycat[t.category]=(bycat[t.category]||0)+t.amount; });
-    const entries = Object.entries(bycat).sort((a,b)=>b[1]-a[1]);
-    const hasData = entries.length > 0;
-    const chart = type==='income' ? incomePieChart : expensePieChart;
-    if (chart) chart.destroy();
-    const newChart = new Chart(ctx, {
-      type:'doughnut',
-      data:{
-        labels: hasData ? entries.map(([c])=>c) : ['Нет данных'],
-        datasets:[{ data: hasData?entries.map(([,v])=>v):[1], backgroundColor: hasData?entries.map((_,i)=>COLORS[i%COLORS.length]):['#2e2e3a'], borderWidth:0, hoverOffset:8 }]
-      },
-      options:{
-        cutout:'62%',
-        plugins:{
-          legend:{ position:'bottom', labels:{ color:'#7a7a8a', font:{family:'DM Sans',size:11}, padding:8, boxWidth:10 } },
-          tooltip:{ enabled: hasData,
-            callbacks:{ label: function(ctx) { var total = ctx.dataset.data.reduce(function(a,b){return a+b;},0)||1; return ' ' + ctx.label + ': ' + fmtMoney(ctx.raw) + ' (' + Math.round(ctx.raw/total*100) + '%)'; } }
-          }
-        },
-        animation:{ animateRotate:true, duration:600 }
-      }
-    });
-    if (type==='income') incomePieChart = newChart;
-    else expensePieChart = newChart;
+function renderIncomeBars(mt) {
+  const el      = document.getElementById('income-bars');
+  const stripEl = document.getElementById('income-total-strip');
+
+  const bycat = {};
+  mt.filter(t => t.type === 'income').forEach(t => {
+    bycat[t.category] = (bycat[t.category] || 0) + t.amount;
+  });
+
+  const entries    = Object.entries(bycat).sort((a, b) => b[1] - a[1]);
+  const grandTotal = entries.reduce((s, [, v]) => s + v, 0);
+
+  if (!entries.length) {
+    el.innerHTML    = '<div class="empty">Нет доходов за этот период</div>';
+    stripEl.innerHTML = '';
+    return;
   }
 
-  buildPie('income-pie-chart', 'income');
-  buildPie('expense-pie-chart', 'expense');
+  const COLORS = ['#4ecb8d','#c8a96e','#5b9cf6','#7c6fcd','#a3e635','#38bdf8','#fb923c','#e06aab','#f0935c','#4ade80'];
+
+  const colorMap = {};
+  entries.forEach(([cat], i) => { colorMap[cat] = COLORS[i % COLORS.length]; });
+
+  const tooltip = document.getElementById('strip-tooltip');
+
+  // ── STACKED STRIP ──
+  const segs = entries.map(([cat, amt]) => ({
+    cat, amt,
+    pct: (amt / grandTotal * 100).toFixed(2),
+    col: colorMap[cat]
+  }));
+
+  stripEl.innerHTML =
+    '<div class="strip-wrap">' +
+      '<div class="strip-total">' + fmtMoney(grandTotal) +
+        '<span style="font-size:13px;color:var(--muted);font-family:\'DM Sans\',sans-serif;margin-left:10px;">всего доходов</span>' +
+      '</div>' +
+      '<div class="strip-bar" id="income-strip-bar">' +
+        segs.map(s =>
+          '<div class="strip-seg" style="width:' + s.pct + '%;background:' + s.col + ';" ' +
+          'data-cat="' + s.cat + '" data-amt="' + s.amt + '" data-pct="' + Math.round(parseFloat(s.pct)) + '" data-col="' + s.col + '"></div>'
+        ).join('') +
+      '</div>' +
+    '</div>';
+
+  const bar = document.getElementById('income-strip-bar');
+  if (bar) bar.querySelectorAll('.strip-seg').forEach(seg => {
+    seg.addEventListener('mousemove', function(e) {
+      tooltip.style.display = 'block';
+      tooltip.style.left = (e.clientX + 14) + 'px';
+      tooltip.style.top  = (e.clientY - 36) + 'px';
+      tooltip.innerHTML =
+        '<span style="color:' + this.dataset.col + ';font-weight:600">' + this.dataset.cat + '</span><br>' +
+        fmtMoney(parseFloat(this.dataset.amt)) + ' <span style="color:var(--muted)">' + this.dataset.pct + '%</span>';
+    });
+    seg.addEventListener('mouseleave', () => { tooltip.style.display = 'none'; });
+  });
+
+  // ── BARS ──
+  el.innerHTML = entries.map(([cat, amt]) => {
+    const pct = Math.round(amt / grandTotal * 100);
+    const col = colorMap[cat];
+    return '<div class="budget-item">' +
+      '<div class="budget-header">' +
+        '<span>💰 ' + cat + '</span>' +
+        '<span style="color:var(--muted)">' + fmtMoney(amt) + ' <span style="color:' + col + '">' + pct + '%</span></span>' +
+      '</div>' +
+      '<div class="budget-bar"><div class="budget-fill" style="width:' + pct + '%;background:' + col + '"></div></div>' +
+    '</div>';
+  }).join('');
 }
 
 
