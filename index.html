@@ -474,7 +474,7 @@
     <div class="card c-income card-click" onclick="openCardModal('income')">  <div class="card-label">Доход</div>    <div class="card-value" id="s-income">$0</div></div>
     <div class="card c-expense card-click" onclick="openCardModal('expense')"> <div class="card-label">Расход</div>   <div class="card-value" id="s-expense">$0</div></div>
     <div class="card c-loss card-click" onclick="openCardModal('loss')">    <div class="card-label">Потери</div>   <div class="card-value" id="s-loss">$0</div></div>
-    <div class="card c-ten card-click" onclick="openCardModal('ten')">     <div class="card-label">10%</div>      <div class="card-value" id="s-ten">$0</div></div>
+    <div class="card c-ten card-click" onclick="openCardModal('ten')">     <div class="card-label">10% <span style="font-size:10px;color:var(--muted);font-family:'DM Sans',sans-serif;">всего</span></div>      <div class="card-value" id="s-ten">$0</div></div>
     <div class="card c-bal">     <div class="card-label" id="s-bal-label">Баланс</div>   <div class="card-value" id="s-bal">$0</div></div>
     <div class="card c-bal" style="--before-bg:var(--accent)">     <div class="card-label">Общий баланс</div>   <div class="card-value" id="s-total-bal">$0</div></div>
   </div>
@@ -865,25 +865,27 @@ function render() {
   buildMonthSel();
   const mt = periodMode === 'all' ? txs : txs.filter(t=>t.date.startsWith(currentMonth));
   const income=sum(mt,'income'), expense=sum(mt,'expense'), loss=sum(mt,'loss'), ten=sum(mt,'ten'), work=sum(mt,'work');
-  const tenForBal = mt.filter(t=>t.type==='ten'&&t.amount>0).reduce((s,t)=>s+t.amount,0);
-  const bal = income - expense - loss - tenForBal;
+  const bal = income - expense - loss; // 10% теперь входит в баланс, не вычитается
+
+  // Общий баланс тоже без вычета 10%
 
   document.getElementById('s-income').textContent  = fmtMoney(income);
   document.getElementById('s-expense').textContent = fmtMoney(expense);
   document.getElementById('s-loss').textContent    = fmtMoney(loss);
-  document.getElementById('s-ten').textContent     = (ten < 0 ? '-' : '') + fmtMoney(ten);
+  // 10% always shows all-time total
+  const tenAll = sum(txs, 'ten');
+  document.getElementById('s-ten').textContent = (tenAll < 0 ? '-' : '') + fmtMoney(tenAll);
   document.getElementById('s-bal').textContent     = (bal < 0 ? '-' : '') + fmtMoney(bal);
 
   // Month label on balance card
   const balLabel = periodMode === 'month' ? 'Баланс в ' + monthLabel(currentMonth).split(' ')[0] : 'Баланс';
   document.getElementById('s-bal-label').textContent = balLabel;
 
-  // Total balance (all time)
+  // Total balance (all time) — 10% входит в баланс
   const allIncome  = sum(txs, 'income');
   const allExpense = sum(txs, 'expense');
   const allLoss    = sum(txs, 'loss');
-  const allTen     = txs.filter(t=>t.type==='ten'&&t.amount>0).reduce((s,t)=>s+t.amount,0);
-  const totalBal   = allIncome - allExpense - allLoss - allTen;
+  const totalBal   = allIncome - allExpense - allLoss;
   const tbEl = document.getElementById('s-total-bal');
   tbEl.textContent = (totalBal < 0 ? '-' : '') + fmtMoney(totalBal);
   tbEl.style.color = totalBal >= 0 ? 'var(--accent)' : 'var(--expense)';
